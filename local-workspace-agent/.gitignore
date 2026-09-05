@@ -1,0 +1,16 @@
+# Local workspace used by the agent
+workspace_agent_playground/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local environment files
+.env
+.env.*
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
