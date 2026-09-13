@@ -1,4 +1,4 @@
-from workspace_agent.cli import main
+from workspace_agent.main import main
 
 if __name__ == "__main__":
     main()

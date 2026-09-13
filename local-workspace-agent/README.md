@@ -1,7 +1,7 @@
 # Workspace Agent
 
-A small learning project that uses LangChain, Ollama, and an MCP filesystem
-server to interact with a local workspace.
+A small learning project that uses LangChain, Ollama, SQLite checkpoints, and an
+MCP filesystem server to interact with a local workspace.
 
 ## Run
 
@@ -12,7 +12,17 @@ uv sync
 uv run workspace-agent
 ```
 
-Type `exit` or `quit` to stop.
+Chats are saved locally. Available commands:
+
+```text
+/new
+/chats [limit]
+/resume <id> [messages]
+/delete <id>
+/history [messages]
+/help
+/exit
+```
 
 ## Checks
 

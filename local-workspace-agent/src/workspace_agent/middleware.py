@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, override
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -30,11 +30,14 @@ class AgentModeMiddleware(AgentMiddleware[AgentState[Any], RuntimeContext]):
     def clear_mcp_tools(self) -> None:
         self._mcp_tools = []
 
+    @override
     async def awrap_model_call(
         self,
         request: ModelRequest[RuntimeContext],
-        handler: Callable[[ModelRequest[RuntimeContext]], Awaitable[ModelResponse[Any]]]
-        ) -> ModelResponse[Any] | AIMessage:
+        handler: Callable[
+            [ModelRequest[RuntimeContext]], Awaitable[ModelResponse[Any]]
+        ],
+    ) -> ModelResponse[Any] | AIMessage:
 
         tools = [*request.tools, *self._mcp_tools]
 
@@ -43,11 +46,12 @@ class AgentModeMiddleware(AgentMiddleware[AgentState[Any], RuntimeContext]):
 
         return await handler(request.override(tools=tools))
 
+    @override
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]
-        ) -> ToolMessage | Command[Any]:
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
 
         for tool in self._mcp_tools:
             if tool.name == request.tool_call["name"]:
@@ -58,7 +62,10 @@ class AgentModeMiddleware(AgentMiddleware[AgentState[Any], RuntimeContext]):
     @staticmethod
     def _is_read_only(tool: BaseTool | dict[str, Any]) -> bool:
 
-        if isinstance(tool, dict): return False
+        if isinstance(tool, dict):
+            return False
 
         metadata = tool.metadata or {}
-        return (tool.name in LOCAL_READ_ONLY_TOOLS or metadata.get("readOnlyHint") is True)
+        return (
+            tool.name in LOCAL_READ_ONLY_TOOLS or metadata.get("readOnlyHint") is True
+        )

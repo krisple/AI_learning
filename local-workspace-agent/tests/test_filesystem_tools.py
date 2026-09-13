@@ -1,9 +1,18 @@
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain.tools import tool
+from langchain_core.tools import BaseTool
 
 from workspace_agent import filesystem_tools
+
+
+@tool
+def read_file() -> str:
+    """Read a file for the test."""
+    return "contents"
 
 
 def test_get_filesystem_tools_uses_the_requested_workspace(
@@ -28,14 +37,14 @@ def test_get_filesystem_tools_uses_the_requested_workspace(
             captured["server_name"] = server_name
             return FakeSessionContext()
 
-    async def fake_load_mcp_tools(session: object) -> list[str]:
+    async def fake_load_mcp_tools(session: object) -> list[BaseTool]:
         events.append("tools loaded")
-        return ["read_file"]
+        return [read_file]
 
     monkeypatch.setattr(filesystem_tools, "MultiServerMCPClient", FakeMCPClient)
     monkeypatch.setattr(filesystem_tools, "load_mcp_tools", fake_load_mcp_tools)
 
-    async def use_tools() -> list[str]:
+    async def use_tools() -> list[BaseTool]:
         async with filesystem_tools.get_filesystem_tools("/tmp/workspace") as tools:
             assert events == ["session opened", "tools loaded"]
             events.append("request handled")
@@ -43,7 +52,7 @@ def test_get_filesystem_tools_uses_the_requested_workspace(
 
     result = asyncio.run(use_tools())
 
-    assert result == ["read_file"]
+    assert result == [read_file]
     assert events == [
         "session opened",
         "tools loaded",
@@ -51,4 +60,10 @@ def test_get_filesystem_tools_uses_the_requested_workspace(
         "session closed",
     ]
     assert captured["server_name"] == "filesystem"
-    assert captured["connections"]["filesystem"]["args"][-1] == "/tmp/workspace"
+
+    connection = captured["connections"]["filesystem"]
+    assert connection["args"][-1] == "/tmp/workspace"
+
+    list_roots = connection["session_kwargs"]["list_roots_callback"]
+    roots = asyncio.run(list_roots(object()))
+    assert str(roots.roots[0].uri) == Path("/tmp/workspace").resolve().as_uri()

@@ -1,5 +1,6 @@
 # Local workspace used by the agent
 workspace_agent_playground/
+.data/
 
 # Python
 .venv/

@@ -1,7 +1,10 @@
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain_core.messages import BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from workspace_agent.context import RuntimeContext
 from workspace_agent.filesystem_tools import get_filesystem_tools
@@ -14,7 +17,11 @@ class WorkspaceAgent:
     """Run a LangChain agent against a local workspace."""
 
     def __init__(
-        self, model_name: str, workspace_path: str, agent_mode: AgentMode
+        self,
+        model_name: str,
+        workspace_path: str,
+        agent_mode: AgentMode,
+        checkpointer: BaseCheckpointSaver[Any],
     ) -> None:
 
         self._context = RuntimeContext(
@@ -29,10 +36,17 @@ class WorkspaceAgent:
             tools=[git_status],
             context_schema=RuntimeContext,
             middleware=[self._middleware],
+            checkpointer=checkpointer,
         )
 
-    async def run_request(self, question: str) -> dict[str, Any]:
+    async def run_request(
+        self,
+        question: str,
+        conversation_id: int,
+    ) -> dict[str, Any]:
         """Send one user request to the agent and return its full state."""
+
+        config = self._conversation_config(conversation_id)
 
         async with get_filesystem_tools(
             self._context["workspace_path"]
@@ -49,10 +63,24 @@ class WorkspaceAgent:
                             }
                         ]
                     },
+                    config=config,
                     context=self._context,
                 )
             finally:
                 self._middleware.clear_mcp_tools()
+
+    async def get_conversation_messages(
+        self,
+        conversation_id: int,
+    ) -> list[BaseMessage]:
+        """Load the latest persisted messages for a conversation."""
+
+        state = await self._agent.aget_state(self._conversation_config(conversation_id))
+        return list(state.values.get("messages", []))
+
+    @staticmethod
+    def _conversation_config(conversation_id: int) -> RunnableConfig:
+        return {"configurable": {"thread_id": str(conversation_id)}}
 
     @staticmethod
     def _create_model(model_name: str) -> ChatOllama:
