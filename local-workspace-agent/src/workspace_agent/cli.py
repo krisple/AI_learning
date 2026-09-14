@@ -1,7 +1,9 @@
 import sys
+from typing import Any
 
 from langchain.messages import AIMessage, HumanMessage
 from langchain_core.messages import BaseMessage
+from langgraph.types import Interrupt
 
 from workspace_agent.agent import WorkspaceAgent
 from workspace_agent.conversations import ConversationStore
@@ -56,6 +58,25 @@ class Terminal:
 
     def muted(self, message: str) -> None:
         print(self._paint(message, self.DIM))
+
+    def request_tool_approval(
+        self,
+        action_summary: str,
+    ) -> bool:
+        while True:
+            try:
+                prompt = f"Agent wants to {action_summary}. Approve? [y/N] › "
+                answer = input(self._paint(prompt, self.YELLOW))
+            except EOFError:
+                return False
+
+            normalized_answer = answer.strip().lower()
+            if normalized_answer in {"y", "yes"}:
+                return True
+            if normalized_answer in {"", "n", "no"}:
+                return False
+
+            self.error("please enter y or n.")
 
     def _paint(self, text: str, color: str) -> str:
         if not self._use_color:
@@ -207,6 +228,13 @@ class ChatCLI:
 
         assert self._conversation_id is not None
         response = await self._agent.run_request(question, self._conversation_id)
+        while interrupts := _get_interrupts(response):
+            decisions = self._review_interrupts(interrupts)
+            response = await self._agent.resume_request(
+                decisions,
+                self._conversation_id,
+            )
+
         await self._conversations.mark_used(self._conversation_id, question)
 
         last_message = response["messages"][-1]
@@ -214,6 +242,41 @@ class ChatCLI:
             self._terminal.show_message(last_message)
         else:
             self._terminal.error("the agent returned an unsupported message format.")
+
+    def _review_interrupts(self, interrupts: tuple[Interrupt, ...]) -> dict[str, Any]:
+        decisions_by_interrupt: dict[str, Any] = {}
+
+        for interrupt in interrupts:
+            request = interrupt.value
+            if not isinstance(request, dict):
+                raise CommandError(
+                    "the agent returned an unsupported approval request."
+                )
+
+            actions = request.get("action_requests")
+            if not isinstance(actions, list) or not actions:
+                raise CommandError("the approval request contains no actions.")
+
+            decisions: list[dict[str, str]] = []
+            for action in actions:
+                if not isinstance(action, dict):
+                    raise CommandError(
+                        "the approval request contains an invalid action."
+                    )
+
+                tool_name = str(action.get("name", "unknown tool"))
+                raw_arguments = action.get("args", {})
+                arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+
+                approved = self._terminal.request_tool_approval(
+                    _summarize_tool_action(tool_name, arguments),
+                )
+                decision = {"type": "approve" if approved else "reject"}
+                decisions.append(decision)
+
+            decisions_by_interrupt[interrupt.id] = {"decisions": decisions}
+
+        return decisions_by_interrupt
 
     def _show_help(self) -> None:
         print(
@@ -284,3 +347,31 @@ def _recent_visible_messages(
 ) -> list[BaseMessage]:
     """Select recent messages without reversing their chronological order."""
     return _visible_messages(messages)[-limit:]
+
+
+def _get_interrupts(response: dict[str, Any]) -> tuple[Interrupt, ...]:
+    raw_interrupts = response.get("__interrupt__", ())
+    if not isinstance(raw_interrupts, (list, tuple)):
+        return ()
+    return tuple(
+        interrupt for interrupt in raw_interrupts if isinstance(interrupt, Interrupt)
+    )
+
+
+def _summarize_tool_action(tool_name: str, arguments: dict[str, Any]) -> str:
+    path = repr(str(arguments.get("path", "the requested path")))
+
+    if tool_name == "write_file":
+        return f"write to file {path}"
+    if tool_name == "edit_file":
+        return f"edit file {path}"
+    if tool_name == "create_directory":
+        return f"create directory {path}"
+    if tool_name == "move_file":
+        source = repr(str(arguments.get("source", "the requested source")))
+        destination = repr(
+            str(arguments.get("destination", "the requested destination"))
+        )
+        return f"move {source} to {destination}"
+
+    return f"run tool {tool_name!r}"

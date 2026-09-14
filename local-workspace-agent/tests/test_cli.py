@@ -1,7 +1,10 @@
 import asyncio
-from typing import cast
+from typing import Any, cast
 
+import pytest
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import ToolCall
+from langgraph.types import Interrupt
 
 from workspace_agent.agent import WorkspaceAgent
 from workspace_agent.cli import (
@@ -75,3 +78,77 @@ def test_delete_active_conversation_clears_it(capsys) -> None:
 
     assert cli._conversation_id is None
     assert capsys.readouterr().out == "Deleted conversation #7.\n"
+
+
+def test_write_approval_resumes_the_interrupted_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, Any] = {}
+    tool_call: ToolCall = {
+        "name": "write_file",
+        "args": {"path": "notes.txt", "content": "hello"},
+        "id": "tool-1",
+    }
+
+    class FakeAgent:
+        async def run_request(
+            self,
+            question: str,
+            conversation_id: int,
+        ) -> dict[str, Any]:
+            return {
+                "messages": [AIMessage(content="", tool_calls=[tool_call])],
+                "__interrupt__": (
+                    Interrupt(
+                        id="interrupt-1",
+                        value={
+                            "action_requests": [
+                                {
+                                    "name": "write_file",
+                                    "args": tool_call["args"],
+                                    "description": "Write notes.txt",
+                                }
+                            ]
+                        },
+                    ),
+                ),
+            }
+
+        async def resume_request(
+            self,
+            decisions: dict[str, Any],
+            conversation_id: int,
+        ) -> dict[str, Any]:
+            captured["decisions"] = decisions
+            captured["conversation_id"] = conversation_id
+            return {"messages": [AIMessage("File written.")]}
+
+    class FakeConversationStore:
+        async def mark_used(self, conversation_id: int, question: str) -> None:
+            captured["marked_used"] = conversation_id, question
+
+    cli = ChatCLI(
+        cast(WorkspaceAgent, FakeAgent()),
+        cast(ConversationStore, FakeConversationStore()),
+        Terminal(use_color=False),
+    )
+    cli._conversation_id = 7
+
+    def approve(prompt: str) -> str:
+        captured["approval_prompt"] = prompt
+        return "y"
+
+    monkeypatch.setattr("builtins.input", approve)
+
+    asyncio.run(cli._send_message("write a note"))
+
+    assert captured["decisions"] == {
+        "interrupt-1": {"decisions": [{"type": "approve"}]}
+    }
+    assert captured["conversation_id"] == 7
+    assert captured["marked_used"] == (7, "write a note")
+    assert captured["approval_prompt"] == (
+        "Agent wants to write to file 'notes.txt'. Approve? [y/N] › "
+    )
+    assert capsys.readouterr().out == "\nAGENT\n  File written.\n"

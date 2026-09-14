@@ -24,6 +24,8 @@ Chats are saved locally. Available commands:
 /exit
 ```
 
+The agent can modify the workspace, but every write operation requires approval.
+
 ## Checks
 
 ```bash

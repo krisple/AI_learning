@@ -8,6 +8,7 @@ import pytest
 from langchain.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from workspace_agent import agent as agent_module
 from workspace_agent.agent import WorkspaceAgent
@@ -22,12 +23,13 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
     class FakeGraph:
         async def ainvoke(
             self,
-            values: dict[str, Any],
+            values: dict[str, Any] | Command[Any],
             *,
             config: dict[str, Any],
             context: dict[str, Any],
         ) -> dict[str, Any]:
             captured["invoke_config"] = config
+            captured.setdefault("invoke_inputs", []).append(values)
             return {"messages": [AIMessage("answer")]}
 
         async def aget_state(self, config: dict[str, Any]) -> SimpleNamespace:
@@ -62,6 +64,14 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
 
     async def scenario() -> None:
         await agent.run_request("hello", conversation_id=42)
+        await agent.resume_request(
+            {
+                "interrupt-1": {
+                    "decisions": [{"type": "approve"}],
+                }
+            },
+            conversation_id=42,
+        )
         messages = await agent.get_conversation_messages(conversation_id=42)
         assert messages == [HumanMessage("hello")]
 
@@ -71,3 +81,10 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
     assert captured["invoke_config"] == expected_config
     assert captured["state_config"] == expected_config
     assert captured["checkpointer"] is checkpointer
+
+    initial_input, resume_input = captured["invoke_inputs"]
+    assert initial_input == {
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    assert isinstance(resume_input, Command)
+    assert resume_input.resume == {"interrupt-1": {"decisions": [{"type": "approve"}]}}

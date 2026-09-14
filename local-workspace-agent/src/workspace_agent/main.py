@@ -25,7 +25,7 @@ async def run_chat() -> None:
         agent = WorkspaceAgent(
             model_name=DEFAULT_MODEL,
             workspace_path=str(workspace_path),
-            agent_mode=AgentMode.READ,
+            agent_mode=AgentMode.WRITE,
             checkpointer=checkpointer,
         )
         await ChatCLI(agent, conversations, Terminal()).run()

@@ -1,16 +1,19 @@
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import InputAgentState
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import Command
 
 from workspace_agent.context import RuntimeContext
 from workspace_agent.filesystem_tools import get_filesystem_tools
 from workspace_agent.middleware import AgentModeMiddleware
 from workspace_agent.mode import AgentMode
 from workspace_agent.tools import git_status
+from workspace_agent.write_approval_hitl_middleware import write_approval_middleware
 
 
 class WorkspaceAgent:
@@ -35,7 +38,10 @@ class WorkspaceAgent:
             model=self._create_model(model_name),
             tools=[git_status],
             context_schema=RuntimeContext,
-            middleware=[self._middleware],
+            middleware=[
+                self._middleware,
+                write_approval_middleware,
+            ],
             checkpointer=checkpointer,
         )
 
@@ -46,6 +52,34 @@ class WorkspaceAgent:
     ) -> dict[str, Any]:
         """Send one user request to the agent and return its full state."""
 
+        return await self._invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": question,
+                    }
+                ]
+            },
+            conversation_id,
+        )
+
+    async def resume_request(
+        self,
+        decisions: dict[str, Any],
+        conversation_id: int,
+    ) -> dict[str, Any]:
+        """Resume an interrupted request with the user's approval decisions."""
+
+        return await self._invoke(Command(resume=decisions), conversation_id)
+
+    async def _invoke(
+        self,
+        request: InputAgentState | Command[Any],
+        conversation_id: int,
+    ) -> dict[str, Any]:
+        """Invoke the agent while its filesystem MCP session is available."""
+
         config = self._conversation_config(conversation_id)
 
         async with get_filesystem_tools(
@@ -55,14 +89,7 @@ class WorkspaceAgent:
 
             try:
                 return await self._agent.ainvoke(
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": question,
-                            }
-                        ]
-                    },
+                    request,
                     config=config,
                     context=self._context,
                 )
