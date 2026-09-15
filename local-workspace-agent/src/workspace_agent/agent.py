@@ -1,8 +1,9 @@
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import InputAgentState
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -14,6 +15,8 @@ from workspace_agent.middleware import AgentModeMiddleware
 from workspace_agent.mode import AgentMode
 from workspace_agent.tools import git_status
 from workspace_agent.write_approval_hitl_middleware import write_approval_middleware
+
+TextChunkHandler = Callable[[str, str], None]
 
 
 class WorkspaceAgent:
@@ -49,6 +52,7 @@ class WorkspaceAgent:
         self,
         question: str,
         conversation_id: int,
+        on_text_chunk: TextChunkHandler | None = None,
     ) -> dict[str, Any]:
         """Send one user request to the agent and return its full state."""
 
@@ -62,21 +66,28 @@ class WorkspaceAgent:
                 ]
             },
             conversation_id,
+            on_text_chunk,
         )
 
     async def resume_request(
         self,
         decisions: dict[str, Any],
         conversation_id: int,
+        on_text_chunk: TextChunkHandler | None = None,
     ) -> dict[str, Any]:
         """Resume an interrupted request with the user's approval decisions."""
 
-        return await self._invoke(Command(resume=decisions), conversation_id)
+        return await self._invoke(
+            Command(resume=decisions),
+            conversation_id,
+            on_text_chunk,
+        )
 
     async def _invoke(
         self,
         request: InputAgentState | Command[Any],
         conversation_id: int,
+        on_text_chunk: TextChunkHandler | None,
     ) -> dict[str, Any]:
         """Invoke the agent while its filesystem MCP session is available."""
 
@@ -88,11 +99,34 @@ class WorkspaceAgent:
             self._middleware.set_mcp_tools(filesystem_tools)
 
             try:
-                return await self._agent.ainvoke(
+                async for chunk in self._agent.astream(
                     request,
                     config=config,
                     context=self._context,
-                )
+                    stream_mode="messages",
+                ):
+                    message, metadata = cast(
+                        tuple[BaseMessage, dict[str, Any]],
+                        chunk,
+                    )
+                    if not isinstance(message, AIMessage) or on_text_chunk is None:
+                        continue
+
+                    text = message.text
+                    if not text:
+                        continue
+
+                    stream_id = (
+                        f"{metadata.get('langgraph_node')}:"
+                        f"{metadata.get('langgraph_step')}"
+                    )
+                    on_text_chunk(text, stream_id)
+
+                state = await self._agent.aget_state(config)
+                response = dict(state.values)
+                if state.interrupts:
+                    response["__interrupt__"] = state.interrupts
+                return response
             finally:
                 self._middleware.clear_mcp_tools()
 

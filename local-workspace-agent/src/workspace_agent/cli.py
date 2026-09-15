@@ -29,6 +29,7 @@ class Terminal:
 
     def __init__(self, use_color: bool | None = None) -> None:
         self._use_color = sys.stdout.isatty() if use_color is None else use_color
+        self._agent_stream_id: str | None = None
 
     def prompt(self, conversation_id: int | None) -> str:
         chat = f"chat #{conversation_id}" if conversation_id else "no active chat"
@@ -58,6 +59,22 @@ class Terminal:
 
     def muted(self, message: str) -> None:
         print(self._paint(message, self.DIM))
+
+    def stream_agent_text(self, text: str, stream_id: str) -> None:
+        if self._agent_stream_id != stream_id:
+            self.finish_agent_stream()
+            print(f"\n{self._paint('AGENT', self.GREEN)}\n  ", end="", flush=True)
+            self._agent_stream_id = stream_id
+
+        print(text.replace("\n", "\n  "), end="", flush=True)
+
+    def finish_agent_stream(self) -> bool:
+        if self._agent_stream_id is None:
+            return False
+
+        print()
+        self._agent_stream_id = None
+        return True
 
     def request_tool_approval(
         self,
@@ -227,21 +244,36 @@ class ChatCLI:
             await self._new_conversation()
 
         assert self._conversation_id is not None
-        response = await self._agent.run_request(question, self._conversation_id)
+        try:
+            response = await self._agent.run_request(
+                question,
+                self._conversation_id,
+                self._terminal.stream_agent_text,
+            )
+        finally:
+            streamed_final_response = self._terminal.finish_agent_stream()
+
         while interrupts := _get_interrupts(response):
             decisions = self._review_interrupts(interrupts)
-            response = await self._agent.resume_request(
-                decisions,
-                self._conversation_id,
-            )
+            try:
+                response = await self._agent.resume_request(
+                    decisions,
+                    self._conversation_id,
+                    self._terminal.stream_agent_text,
+                )
+            finally:
+                streamed_final_response = self._terminal.finish_agent_stream()
 
         await self._conversations.mark_used(self._conversation_id, question)
 
-        last_message = response["messages"][-1]
-        if isinstance(last_message, BaseMessage):
-            self._terminal.show_message(last_message)
-        else:
-            self._terminal.error("the agent returned an unsupported message format.")
+        if not streamed_final_response:
+            last_message = response["messages"][-1]
+            if isinstance(last_message, BaseMessage):
+                self._terminal.show_message(last_message)
+            else:
+                self._terminal.error(
+                    "the agent returned an unsupported message format."
+                )
 
     def _review_interrupts(self, interrupts: tuple[Interrupt, ...]) -> dict[str, Any]:
         decisions_by_interrupt: dict[str, Any] = {}

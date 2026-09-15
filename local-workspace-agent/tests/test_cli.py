@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -96,6 +97,7 @@ def test_write_approval_resumes_the_interrupted_conversation(
             self,
             question: str,
             conversation_id: int,
+            on_text_chunk: Callable[[str, str], None] | None = None,
         ) -> dict[str, Any]:
             return {
                 "messages": [AIMessage(content="", tool_calls=[tool_call])],
@@ -119,9 +121,13 @@ def test_write_approval_resumes_the_interrupted_conversation(
             self,
             decisions: dict[str, Any],
             conversation_id: int,
+            on_text_chunk: Callable[[str, str], None] | None = None,
         ) -> dict[str, Any]:
             captured["decisions"] = decisions
             captured["conversation_id"] = conversation_id
+            assert on_text_chunk is not None
+            on_text_chunk("File ", "model:2")
+            on_text_chunk("written.", "model:2")
             return {"messages": [AIMessage("File written.")]}
 
     class FakeConversationStore:

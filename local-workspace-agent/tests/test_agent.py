@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain.messages import AIMessage, HumanMessage
+from langchain.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -21,20 +21,38 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
     captured: dict[str, Any] = {}
 
     class FakeGraph:
-        async def ainvoke(
+        async def astream(
             self,
             values: dict[str, Any] | Command[Any],
             *,
             config: dict[str, Any],
             context: dict[str, Any],
-        ) -> dict[str, Any]:
+            stream_mode: str,
+        ) -> AsyncIterator[tuple[AIMessageChunk, dict[str, Any]]]:
             captured["invoke_config"] = config
             captured.setdefault("invoke_inputs", []).append(values)
-            return {"messages": [AIMessage("answer")]}
+            captured["stream_mode"] = stream_mode
+            yield (
+                AIMessageChunk(content="ans"),
+                {
+                    "langgraph_node": "model",
+                    "langgraph_step": 1,
+                },
+            )
+            yield (
+                AIMessageChunk(content="wer"),
+                {
+                    "langgraph_node": "model",
+                    "langgraph_step": 1,
+                },
+            )
 
         async def aget_state(self, config: dict[str, Any]) -> SimpleNamespace:
             captured["state_config"] = config
-            return SimpleNamespace(values={"messages": [HumanMessage("hello")]})
+            return SimpleNamespace(
+                values={"messages": [AIMessage("answer")]},
+                interrupts=(),
+            )
 
     def fake_create_agent(**kwargs: Any) -> FakeGraph:
         captured["checkpointer"] = kwargs["checkpointer"]
@@ -63,7 +81,12 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
     )
 
     async def scenario() -> None:
-        await agent.run_request("hello", conversation_id=42)
+        streamed_text: list[str] = []
+        await agent.run_request(
+            "hello",
+            conversation_id=42,
+            on_text_chunk=lambda text, _stream_id: streamed_text.append(text),
+        )
         await agent.resume_request(
             {
                 "interrupt-1": {
@@ -73,7 +96,8 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
             conversation_id=42,
         )
         messages = await agent.get_conversation_messages(conversation_id=42)
-        assert messages == [HumanMessage("hello")]
+        assert messages == [AIMessage("answer")]
+        assert streamed_text == ["ans", "wer"]
 
     asyncio.run(scenario())
 
@@ -81,6 +105,7 @@ def test_conversation_id_is_used_as_the_checkpoint_thread(
     assert captured["invoke_config"] == expected_config
     assert captured["state_config"] == expected_config
     assert captured["checkpointer"] is checkpointer
+    assert captured["stream_mode"] == "messages"
 
     initial_input, resume_input = captured["invoke_inputs"]
     assert initial_input == {
